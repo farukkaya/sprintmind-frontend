@@ -3,23 +3,34 @@ import type {
   ParticipantDto, VoteReceivedEvent, StatusChangedEvent, VotesRevealedEvent
 } from '@/types'
 
-// Vite proxy (/hubs → http://localhost:5000) üzerinden bağlan.
-// Relative URL kullanmak CORS sorununu tamamen ortadan kaldırır.
 const HUB_URL = '/hubs/planning'
 
 let connection: signalR.HubConnection | null = null
+
+// Reconnect sonrası hangi session'a geri katılacağımızı bilmek için
+let activeSessionId: string | null = null
 
 export function getConnection(): signalR.HubConnection {
   if (!connection) {
     connection = new signalR.HubConnectionBuilder()
       .withUrl(HUB_URL, {
         accessTokenFactory: () => localStorage.getItem('sm_token') ?? '',
-        // WebSocket tercihli, Long Polling fallback
         transport: signalR.HttpTransportType.WebSockets | signalR.HttpTransportType.LongPolling,
       })
       .withAutomaticReconnect()
       .configureLogging(signalR.LogLevel.Warning)
       .build()
+
+    // Reconnect olunca grup üyeliği sıfırlanır — session'a tekrar katıl
+    connection.onreconnected(async () => {
+      if (activeSessionId) {
+        try {
+          await connection!.invoke('JoinSession', activeSessionId)
+        } catch {
+          // ignore
+        }
+      }
+    })
   }
   return connection
 }
@@ -34,16 +45,19 @@ export async function startConnection(): Promise<void> {
 export async function stopConnection(): Promise<void> {
   if (connection) {
     await connection.stop()
-    connection = null
+    // connection objesini null yapma — listener'lar ve activeSessionId korunur
+    // böylece aynı obje üzerinde start/stop döngüsü güvenli çalışır
   }
 }
 
 // ─── Hub methods (client → server) ────────────────────────────────────────
 export async function joinSession(sessionId: string): Promise<void> {
+  activeSessionId = sessionId
   await getConnection().invoke('JoinSession', sessionId)
 }
 
 export async function leaveSession(sessionId: string): Promise<void> {
+  activeSessionId = null
   await getConnection().invoke('LeaveSession', sessionId)
 }
 
@@ -72,11 +86,19 @@ export function onUserJoined(
 }
 
 export function onUserLeft(
-  cb: (userId: string) => void,
+  cb: (data: unknown) => void,
 ): () => void {
   const conn = getConnection()
   conn.on('UserLeft', cb)
   return () => conn.off('UserLeft', cb)
+}
+
+export function onItemAdded(
+  cb: (data: unknown) => void,
+): () => void {
+  const conn = getConnection()
+  conn.on('ItemAdded', cb)
+  return () => conn.off('ItemAdded', cb)
 }
 
 export function onVoteReceived(

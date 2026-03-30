@@ -5,7 +5,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import {
   startConnection, stopConnection, joinSession, leaveSession,
   onUserJoined, onUserLeft, onVoteReceived, onStatusChanged, onVotesRevealed,
-  changeStatusHub,
+  onItemAdded, changeStatusHub,
 } from '@/lib/signalr'
 import {
   STATUS_LABEL, STATUS_COLOR, NEXT_STATUS, NEXT_STATUS_LABEL,
@@ -15,7 +15,7 @@ import {
   type SessionDetailDto, type SessionItemDto, type SessionStatus, type FibonacciSp,
 } from '@/types'
 import {
-  ArrowLeft, Plus, Users, Loader2, CheckCircle2, Clock, Wifi, WifiOff, Link2, Check,
+  ArrowLeft, Plus, Users, Loader2, CheckCircle2, Clock, Wifi, WifiOff, Link2, Check, X,
 } from 'lucide-react'
 
 // ─── Voting Cards ─────────────────────────────────────────────────────────
@@ -41,8 +41,8 @@ function VotingCards({
     try {
       await sessionsApi.castVote(sessionId, itemId, v)
       onVoted(v)
-    } catch {
-      // ignore
+    } catch (ex){
+console.error('Vote failed', ex)
     } finally {
       setLoading(null)
     }
@@ -73,12 +73,219 @@ function VotingCards({
   )
 }
 
+// ─── Poker Card ──────────────────────────────────────────────────────────────
+function PokerCard({
+  hasVoted,
+  value,
+  revealed,
+}: {
+  hasVoted: boolean
+  value: FibonacciSp | null
+  revealed: boolean
+}) {
+  if (!hasVoted) {
+    return <div className="w-9 h-12 rounded-md border-2 border-dashed border-slate-700" />
+  }
+  if (!revealed) {
+    return (
+      <div className="w-9 h-12 rounded-md bg-brand/70 border border-brand/40 flex items-center justify-center">
+        <div className="w-5 h-7 rounded border border-white/20" />
+      </div>
+    )
+  }
+  return (
+    <div className="w-9 h-12 rounded-md bg-white flex items-center justify-center shadow-md">
+      <span className="text-slate-900 font-bold text-sm">
+        {value !== null ? SP_LABEL[value] : '–'}
+      </span>
+    </div>
+  )
+}
+
+// ─── Poker Table Modal ────────────────────────────────────────────────────────
+function PokerTableModal({
+  item,
+  session,
+  currentUserId,
+  isOwner,
+  sessionId,
+  onClose,
+  onReveal,
+}: {
+  item: SessionItemDto
+  session: SessionDetailDto
+  currentUserId: string
+  isOwner: boolean
+  sessionId: string
+  onClose: () => void
+  onReveal: () => void
+}) {
+  const [myVote, setMyVote] = useState<FibonacciSp | null>(
+    () => (item.votes.find((v) => v.userId === currentUserId)?.value as FibonacciSp) ?? null,
+  )
+  const [loadingVote, setLoadingVote] = useState<number | null>(null)
+
+  const { status } = session
+  const revealed = status === 'Revealed' || status === 'Completed'
+  const seated = session.participants.filter((p) => p.isConnected)
+
+  async function handleVote(v: FibonacciSp) {
+    setLoadingVote(v)
+    try {
+      await sessionsApi.castVote(sessionId, item.id, v)
+      setMyVote(v)
+    } catch (ex) {
+      console.error('Vote failed', ex)
+    } finally {
+      setLoadingVote(null)
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex flex-col items-center justify-center p-4 bg-black/75 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="relative w-full max-w-2xl space-y-4"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex-1 min-w-0">
+            <p className="font-semibold text-white truncate">{item.title}</p>
+            {item.description && (
+              <p className="text-xs text-slate-400 mt-0.5">{item.description}</p>
+            )}
+            {item.aiSummary && (
+              <p className="text-xs text-slate-400 mt-1 bg-surface rounded-lg px-2 py-1 border border-surface-border">
+                <span className="text-brand-light font-medium">🤖 AI: </span>
+                {item.aiSummary}
+              </p>
+            )}
+          </div>
+          <button type="button" onClick={onClose} className="btn-ghost p-1.5 rounded-lg shrink-0">
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Table */}
+        <div className="relative" style={{ height: 340 }}>
+          {/* Oval table surface */}
+          <div
+            className="absolute bg-surface-card/80 border border-surface-border rounded-[50%] flex items-center justify-center"
+            style={{ inset: '55px 70px' }}
+          >
+            <div className="flex flex-col items-center gap-2 text-center px-6">
+              {isOwner && status === 'Voting' && (
+                <button type="button" onClick={onReveal} className="btn-primary text-sm">
+                  Oyları Aç
+                </button>
+              )}
+              {status === 'Waiting' && (
+                <p className="text-xs text-slate-500">Oylama henüz başlamadı</p>
+              )}
+              {status === 'Voting' && !isOwner && (
+                <p className="text-xs text-slate-500">Kartınızı seçin</p>
+              )}
+              {revealed && item.votes.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 justify-center">
+                  {item.votes.map((v) => (
+                    <span
+                      key={v.userId}
+                      className="text-xs bg-surface-hover rounded px-2 py-0.5 text-slate-300"
+                    >
+                      <span className="font-bold text-white">
+                        {v.value !== null ? SP_LABEL[v.value] : '–'}
+                      </span>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Participants around the table */}
+          {seated.map((p, i) => {
+            const angle = (i / seated.length) * 2 * Math.PI - Math.PI / 2
+            const left = `${50 + 44 * Math.cos(angle)}%`
+            const top = `${50 + 38 * Math.sin(angle)}%`
+            const vote = item.votes.find((v) => v.userId === p.userId)
+            const isMe = p.userId === currentUserId
+            const isTopHalf = Math.sin(angle) < 0
+
+            const avatar = (
+              <div
+                className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${
+                  isMe
+                    ? 'bg-brand text-white ring-2 ring-brand/40'
+                    : 'bg-surface-hover text-slate-300'
+                }`}
+              >
+                {p.displayName.charAt(0).toUpperCase()}
+              </div>
+            )
+            const nameTag = (
+              <span className="text-[10px] text-slate-400 whitespace-nowrap max-w-[4.5rem] truncate">
+                {isMe ? 'Sen' : p.displayName}
+              </span>
+            )
+            const card = (
+              <PokerCard hasVoted={!!vote} value={vote?.value ?? null} revealed={revealed} />
+            )
+
+            return (
+              <div
+                key={p.userId}
+                className="absolute flex flex-col items-center gap-0.5"
+                style={{ left, top, transform: 'translate(-50%, -50%)' }}
+              >
+                {isTopHalf ? (
+                  <>{avatar}{nameTag}{card}</>
+                ) : (
+                  <>{card}{avatar}{nameTag}</>
+                )}
+              </div>
+            )
+          })}
+        </div>
+
+        {/* Voting cards */}
+        {status === 'Voting' && (
+          <div className="flex flex-wrap justify-center gap-2">
+            {FIBONACCI_VALUES.map((v) => (
+              <button
+                key={v}
+                type="button"
+                disabled={loadingVote !== null}
+                onClick={() => handleVote(v as FibonacciSp)}
+                className={`w-11 h-14 rounded-lg border text-sm font-bold transition-all ${
+                  myVote === v
+                    ? 'bg-brand border-brand text-white shadow-lg shadow-brand/30 scale-105'
+                    : 'border-surface-border bg-surface hover:border-brand/60 hover:bg-brand/10 text-slate-300'
+                }`}
+              >
+                {loadingVote === v ? (
+                  <Loader2 size={12} className="animate-spin mx-auto" />
+                ) : (
+                  SP_LABEL[v]
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ─── Session Item ─────────────────────────────────────────────────────────
 function SessionItemRow({
   item,
   sessionId,
   status,
   currentUserId,
+  participantCount,
   isActive,
   onClick,
 }: {
@@ -86,14 +293,12 @@ function SessionItemRow({
   sessionId: string
   status: SessionStatus
   currentUserId: string
+  participantCount: number
   isActive: boolean
   onClick: () => void
 }) {
-  const [myVote, setMyVote] = useState<FibonacciSp | null>(
-    () =>
-      (item.votes.find((v) => v.userId === currentUserId)?.value as FibonacciSp) ??
-      null,
-  )
+  const myVote =
+    (item.votes.find((v) => v.userId === currentUserId)?.value as FibonacciSp) ?? null
 
   const votedCount = item.votes.filter((v) => v.value !== null).length
 
@@ -124,7 +329,7 @@ function SessionItemRow({
             {(status === 'Voting' || status === 'Revealed') && (
               <span className="text-xs text-slate-500 flex items-center gap-1">
                 <Users size={11} />
-                {votedCount}
+                {votedCount}/{participantCount}
               </span>
             )}
             {/* Final SP */}
@@ -147,48 +352,6 @@ function SessionItemRow({
         </div>
       </button>
 
-      {/* Expanded: voting panel */}
-      {isActive && (
-        <div className="px-3 pb-3 space-y-3 border-t border-surface-border pt-3">
-          {/* AI Summary */}
-          {item.aiSummary && (
-            <div className="text-xs text-slate-400 bg-surface rounded-lg p-2 border border-surface-border">
-              <span className="text-brand-light font-medium">🤖 AI: </span>
-              {item.aiSummary}
-            </div>
-          )}
-
-          {/* Voting cards */}
-          <VotingCards
-            itemId={item.id}
-            sessionId={sessionId}
-            status={status}
-            myVote={myVote}
-            onVoted={setMyVote}
-          />
-
-          {/* Revealed votes */}
-          {(status === 'Revealed' || status === 'Completed') &&
-            item.votes.length > 0 && (
-              <div className="space-y-1">
-                <p className="text-xs text-slate-500 font-medium">Oylar:</p>
-                <div className="flex flex-wrap gap-2">
-                  {item.votes.map((v) => (
-                    <div
-                      key={v.userId}
-                      className="flex items-center gap-1.5 bg-surface-hover rounded-md px-2 py-1"
-                    >
-                      <span className="text-xs text-slate-400">{v.displayName}</span>
-                      <span className="text-xs font-bold text-white">
-                        {v.value !== null ? SP_LABEL[v.value] : '–'}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-        </div>
-      )}
     </div>
   )
 }
@@ -199,7 +362,7 @@ function AddItemForm({
   onAdded,
 }: {
   sessionId: string
-  onAdded: (session: SessionDetailDto) => void
+  onAdded: () => void
 }) {
   const [open, setOpen] = useState(false)
   const [title, setTitle] = useState('')
@@ -211,11 +374,11 @@ function AddItemForm({
     if (!title.trim()) return
     setLoading(true)
     try {
-      const res = await sessionsApi.addItem(sessionId, {
+      await sessionsApi.addItem(sessionId, {
         title: title.trim(),
         description: description.trim() || undefined,
       })
-      onAdded(res.data)
+      onAdded()
       setTitle('')
       setDescription('')
       setOpen(false)
@@ -318,48 +481,38 @@ export default function SessionPage() {
     if (!sessionId) return
 
     let active = true
+    let retryTimeout: ReturnType<typeof setTimeout> | null = null
 
     async function connect() {
       try {
         await startConnection()
         await joinSession(sessionId!)
-        if (active) setConnected(true)
+        if (active) {
+          setConnected(true)
+          await fetchSession()
+        }
       } catch {
-        // retry handled by withAutomaticReconnect
+        if (active) {
+          retryTimeout = setTimeout(connect, 3000)
+        }
       }
     }
 
     connect()
 
-    const offUserJoined = onUserJoined((p) => {
-      setSession((s) => {
-        if (!s) return s
-        const exists = s.participants.find((x) => x.userId === p.userId)
-        return {
-          ...s,
-          participants: exists
-            ? s.participants.map((x) =>
-                x.userId === p.userId ? { ...x, isConnected: true } : x,
-              )
-            : [...s.participants, p],
-        }
-      })
+    const offUserJoined = onUserJoined(() => {
+      fetchSession()
     })
 
-    const offUserLeft = onUserLeft((userId) => {
-      setSession((s) => {
-        if (!s) return s
-        return {
-          ...s,
-          participants: s.participants.map((x) =>
-            x.userId === userId ? { ...x, isConnected: false } : x,
-          ),
-        }
-      })
+    const offUserLeft = onUserLeft(() => {
+      fetchSession()
+    })
+
+    const offItemAdded = onItemAdded(() => {
+      fetchSession()
     })
 
     const offVoteReceived = onVoteReceived(() => {
-      // Refresh votes count silently
       fetchSession()
     })
 
@@ -375,8 +528,10 @@ export default function SessionPage() {
 
     return () => {
       active = false
+      if (retryTimeout) clearTimeout(retryTimeout)
       offUserJoined()
       offUserLeft()
+      offItemAdded()
       offVoteReceived()
       offStatusChanged()
       offVotesRevealed()
@@ -481,11 +636,11 @@ export default function SessionPage() {
         <div className="flex-1 min-w-0 space-y-2">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-sm font-medium text-slate-400">
-              Backlog ({session.items.length})
+              Backlog ({session.items?.length})
             </h2>
           </div>
 
-          {session.items.length === 0 && session.status === 'Waiting' && (
+          {session.items?.length === 0 && session.status === 'Waiting' && (
             <p className="text-sm text-slate-500 py-4 text-center">
               Henüz backlog item yok. Aşağıdan ekleyin.
             </p>
@@ -498,6 +653,7 @@ export default function SessionPage() {
               sessionId={session.id}
               status={session.status}
               currentUserId={user?.userId ?? ''}
+              participantCount={session.participants.length}
               isActive={activeItemId === item.id}
               onClick={() =>
                 setActiveItemId((prev) => (prev === item.id ? null : item.id))
@@ -508,7 +664,7 @@ export default function SessionPage() {
           {session.status === 'Waiting' && (
             <AddItemForm
               sessionId={session.id}
-              onAdded={(updated) => setSession(updated)}
+              onAdded={fetchSession}
             />
           )}
         </div>
@@ -553,6 +709,23 @@ export default function SessionPage() {
           </div>
         </div>
       </div>
+
+      {/* Poker Table Modal */}
+      {activeItemId && (() => {
+        const activeItem = session.items.find((i) => i.id === activeItemId)
+        if (!activeItem) return null
+        return (
+          <PokerTableModal
+            item={activeItem}
+            session={session}
+            currentUserId={user?.userId ?? ''}
+            isOwner={isOwner}
+            sessionId={session.id}
+            onClose={() => setActiveItemId(null)}
+            onReveal={handleStatusChange}
+          />
+        )
+      })()}
     </div>
   )
 }

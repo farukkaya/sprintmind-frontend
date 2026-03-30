@@ -34,7 +34,7 @@ function CreateSessionModal({ onClose, onCreate }: CreateModalProps) {
         type: res.data.type,
         status: res.data.status,
         createdAt: res.data.createdAt,
-        participantCount: res.data.participants.length,
+        participantCount: res.data.participantCount ?? 1,
       }
       onCreate(dto)
     } catch {
